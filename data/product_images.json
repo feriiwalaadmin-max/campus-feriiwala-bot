@@ -1,0 +1,65 @@
+[
+  {
+    "image_id": "Hoco_ES70_Neckband_main_01",
+    "product_id": "Hoco ES70 Neckband",
+    "product_name": "Hoco ES70 Neckband",
+    "image_type": "main_product",
+    "file_path": "L:/campus_feriiwala_agent/assets/products/hoco-es70_1 (1).webp",
+    "upload_date": "2026-09-26T00:00:00+00:00",
+    "active": true
+  },
+  {
+    "image_id": "HP W10 Mouse_reference_05a453ac49",
+    "product_id": "HP W10 Mouse",
+    "product_name": "HP W10 Mouse",
+    "image_type": "reference_upload",
+    "file_path": "L:\\campus_feriiwala_agent\\assets\\temp_ref.jpg",
+    "upload_date": "2026-09-27T05:09:12.457265+00:00",
+    "active": true
+  },
+  {
+    "image_id": "Awei T88 ANC_reference_ad65e3682e",
+    "product_id": "Awei T88 ANC",
+    "product_name": "Awei T88 ANC",
+    "image_type": "reference_upload",
+    "file_path": "L:\\campus_feriiwala_agent\\assets\\temp_ref.jpg",
+    "upload_date": "2026-09-27T05:53:16.736857+00:00",
+    "active": true
+  },
+  {
+    "image_id": "awei_t88_generated_awei_t88_gemini",
+    "product_id": "awei_t88",
+    "product_name": "Awei T88 ANC",
+    "image_type": "generated_design",
+    "file_path": "L:\\campus_feriiwala_agent\\assets\\generated\\awei_t88_gemini.png",
+    "upload_date": "2026-09-27T05:54:55.179647+00:00",
+    "active": true
+  },
+  {
+    "image_id": "HP_W10_Mouse_generated_HP_W10_Mouse_gemini",
+    "product_id": "HP W10 Mouse",
+    "product_name": "HP W10 Mouse",
+    "image_type": "generated_design",
+    "file_path": "L:\\campus_feriiwala_agent\\assets\\generated\\HP_W10_Mouse_gemini.png",
+    "upload_date": "2026-09-27T06:27:32.413472+00:00",
+    "active": true
+  },
+  {
+    "image_id": "Awei PA-92 Power Bank_reference_8494cf117a",
+    "product_id": "Awei PA-92 Power Bank",
+    "product_name": "Awei PA-92 Power Bank",
+    "image_type": "reference_upload",
+    "file_path": "L:\\campus_feriiwala_agent\\assets\\temp_ref.jpg",
+    "upload_date": "2026-09-27T06:29:31.107103+00:00",
+    "active": true
+  },
+  {
+    "image_id": "Awei_PA-92_Power_Bank_generated_Awei_PA-92_Power_Bank_gemini",
+    "product_id": "Awei PA-92 Power Bank",
+    "product_name": "Awei PA-92 Power Bank",
+    "image_type": "generated_design",
+    "file_path": "L:\\campus_feriiwala_agent\\assets\\generated\\Awei_PA-92_Power_Bank_gemini.png",
+    "upload_date": "2026-09-27T06:30:13.331288+00:00",
+    "active": true
+  }
+]

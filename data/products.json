@@ -1,0 +1,112 @@
+[
+  {
+    "id": "awei_t88",
+    "name": "Awei T88 ANC",
+    "price": null,
+    "warranty": "6 Months",
+    "category": "Earbuds",
+    "aliases": ["t88", "t888", "awei t88", "এওয়েট ৮৮", "এওয়েট ৮৮৮", "anc earbud", "t88 anc"],
+    "specs": {"anc": "35dB ANC", "enc": true, "bluetooth": "5.4", "driver": "10mm", "waterproof": "IPX6", "port": "Type-C", "charging_time": "1hr fast charging", "battery_backup": "5.5-6h"},
+    "best_for": "daily noisy commute/campus use",
+    "active": true
+  },
+  {
+    "id": "hoco_es70",
+    "name": "Hoco ES70 Neckband",
+    "price": null,
+    "warranty": "7 Days",
+    "category": "Neckband",
+    "aliases": ["es70", "es 70", "hoco", "neckband", "নেকব্যান্ড", "ইএস৭০"],
+    "specs": {"battery_backup": "Up to 80 Hours", "bluetooth": "5.3", "driver": "10mm", "ear_tips": "Magnetic", "waterproof": "IPX5", "port": "Type-C"},
+    "best_for": "non-stop battery backup/marathon daily use",
+    "active": true
+  },
+  {
+    "id": "q86_earbuds",
+    "name": "Q86 Retro Camera Earbuds",
+    "price": null,
+    "warranty": "7 Days",
+    "category": "Earbuds",
+    "aliases": ["q86", "retro camera", "camera earbud", "cute earbuds", "কিউ৮৬"],
+    "specs": {"design": "Retro Camera", "style": "Cute and compact", "display": "LED Battery Display", "bluetooth": "5.3", "battery_backup": "2-3h"},
+    "best_for": "gift/style/aesthetic desk",
+    "active": true
+  },
+  {
+    "id": "awei_pa92",
+    "name": "Awei PA-92 22.5W Fast Charging Power Bank",
+    "price": null,
+    "warranty": "6 Months",
+    "category": "Power Bank",
+    "aliases": ["pa92", "pa 92", "awei power bank", "20000mah", "পিএ ৯২"],
+    "specs": {"capacity": "20,000mAh", "charging": "22.5W Fast Charging", "display": "Digital LED", "ports": "Type-C and USB-A"},
+    "best_for": "whole-day campus power/heavy device users",
+    "active": true
+  },
+  {
+    "id": "yage_ygt034",
+    "name": "Yage YGT034 Table Lamp",
+    "price": null,
+    "warranty": "7 Days",
+    "category": "Table Lamp",
+    "aliases": ["lamp", "table lamp", "yage", "study lamp", "বাতি", "টেবিল ল্যাম্প", "ygt034"],
+    "specs": {"light": "Warm Light", "modes": "1", "brightness": "Adjustable", "control": "Touch", "design": "Swan-Neck", "charging": "USB Rechargeable", "battery_backup": "2.5-3h"},
+    "best_for": "night study/reading without disturbing roommates",
+    "active": true
+  },
+  {
+    "id": "hp_w10",
+    "name": "HP W10 Wireless + Bluetooth Mouse",
+    "price": null,
+    "warranty": "7 Days",
+    "category": "Mouse",
+    "aliases": ["w10", "w-10", "w100", "mouse", "hp mouse", "মাউস", "wireless mouse", "ডব্লিউ ১০"],
+    "specs": {"connectivity": "Bluetooth + 2.4G", "dpi": "1600 DPI", "lighting": "RGB", "charging": "Type-C Rechargeable", "design": "Slim Apple-inspired", "battery_backup": "15 days"},
+    "best_for": "laptop users/quiet library study",
+    "active": true
+  },
+  {
+    "id": "cleaning_kit_7in1",
+    "name": "7-in-1 Cleaning Kit",
+    "price": null,
+    "warranty": "No Warranty",
+    "category": "Cleaning Kit",
+    "aliases": ["cleaner", "cleaner kit", "cleaning kit", "7 in 1", "ক্লিনিং কিট", "ক্লিনার"],
+    "specs": {"tools": "Display cleaner, fluid, keyboard brush, keycap puller, earbuds cleaner, dirt remover"},
+    "best_for": "keeping laptop, keyboard and earbuds clean",
+    "active": true
+  },
+  {
+    "id": "mouse_pad",
+    "name": "Large Gaming Mouse Pad",
+    "price": null,
+    "warranty": "No Warranty",
+    "category": "Mouse Pad",
+    "aliases": ["mouse pad", "pad", "মাউস প্যাড", "desk mat"],
+    "specs": {"size": "Large", "material": "Rubber", "surface": "Smooth", "grip": "Anti-slip", "waterproof": "Water-resistant", "edges": "Stitched"},
+    "best_for": "clean desk setup",
+    "active": true
+  },
+  {
+    "id": "vandens_10000",
+    "name": "VAN-DENS 10,000mAh Power Bank",
+    "price": null,
+    "warranty": "7 Days",
+    "category": "Power Bank",
+    "aliases": ["vandens", "van dens", "ভ্যানডেন্স", "ভেন্ডেন্স", "10000mah pb"],
+    "specs": {"capacity": "10,000mAh", "cables": "Built-in Type-C, Lightning and USB", "indicator": "Battery indicator", "light": "Flashlight"},
+    "best_for": "portable travel without extra cables",
+    "active": true
+  },
+  {
+    "id": "wgp_mini_ups",
+    "name": "WGP Mini UPS (Router Backup)",
+    "price": null,
+    "warranty": "7 Days",
+    "category": "Mini UPS",
+    "aliases": ["wgp", "mini ups", "router ups", "রাউটার ইউপিএস", "ইউপিএস"],
+    "specs": {"capacity": "10,400mAh", "output": "5V/9V/12V", "battery_backup": "7-8+ hours estimated for Router + ONU"},
+    "best_for": "uninterrupted internet during load shedding/online exams",
+    "active": true
+  }
+]

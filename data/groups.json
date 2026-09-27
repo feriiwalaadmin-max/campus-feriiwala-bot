@@ -1,0 +1,28 @@
+[
+  {
+    "name": "IUBAT [To-let & Recycle Bin]",
+    "code": "IUBAT",
+    "campus": "IUBAT",
+    "notes": "Public student group"
+  },
+  {
+    "name": "WUB student group",
+    "code": "WUB",
+    "campus": "World University of Bangladesh"
+  },
+  {
+    "name": "NUB student group",
+    "code": "NUB",
+    "campus": "Northern University Bangladesh"
+  },
+  {
+    "name": "Santamariam group",
+    "code": "SMUCT",
+    "campus": "Shanto-Mariam University of Creative Technology"
+  },
+  {
+    "name": "Daffodil groups",
+    "code": "DIU",
+    "campus": "Daffodil International University"
+  }
+]
