@@ -23,7 +23,7 @@ from core.database import (
     save_content_history,
     save_performance_log,
 )
-from core.generator import generate_post_content
+from core.generator import generate_post_content, refine_caption
 from core.parser import parse_daily_plan
 from core.scheduler import scheduler
 
@@ -88,15 +88,22 @@ async def _send_post_dispatch(post_data: dict[str, Any]) -> None:
     product = get_product_by_name_or_alias(name)
     if product is None:
         return
-    generated = generate_post_content(
-        product,
-        group or {"code": post_data.get("group_code"), "name": group_name},
-        past_history=get_recent_history(7),
-        custom_instruction=post_data.get("instructions") or None,
+    saved_caption = str(post_data.get("last_caption", "")).strip()
+    saved_comment = str(post_data.get("last_first_comment", "")).strip()
+    generated = (
+        {"caption": saved_caption, "first_comment": saved_comment}
+        if saved_caption
+        else generate_post_content(
+            product,
+            group or {"code": post_data.get("group_code"), "name": group_name},
+            past_history=get_recent_history(7),
+            custom_instruction=post_data.get("instructions") or None,
+        )
     )
     package = f"ক্যাপশন:\n{generated.get('caption', '')}\n\nফার্স্ট কমেন্ট:\n{generated.get('first_comment', '')}"
 
     if stage == "stage_2":
+        scheduler.update_post_copy(str(post_data.get("parent_post_id", "")), generated.get("caption", ""), generated.get("first_comment", ""))
         await _application.bot.send_message(
             chat_id=TELEGRAM_ADMIN_CHAT_ID,
             text=(
@@ -158,6 +165,66 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("প্ল্যানটা বুঝতে পারিনি। প্রোডাক্ট, সময় আর গ্রুপ কোডসহ আবার লিখে দাও।")
         return
 
+    if not parsed.get("success"):
+        await update.message.reply_text(parsed.get("clarification_message") or "আরও একটু তথ্য দাও।")
+        return
+
+    today = _local_now().date().isoformat()
+    confirmations: list[str] = []
+    for post in parsed.get("scheduled_posts", []):
+        post_data = {
+            "post_id": str(uuid.uuid4()),
+            "product_id": post["product_id"],
+            "product_name": post["product_name"],
+            "group_code": post.get("group_code"),
+            "scheduled_time": post["time"],
+            "date": str(post.get("date") or post.get("target_date") or today),
+            "instructions": post.get("instructions", text),
+        }
+        scheduler.add_scheduled_post(post_data, _send_post_dispatch)
+        save_content_history({**post_data, "status": "SCHEDULED"})
+        confirmations.append(f"• {post_data['date']} {post_data['scheduled_time']} — {post_data['product_name']} — {_group_name(post_data['group_code'])}")
+    await update.message.reply_text("📋 শিডিউল কনফার্মড:\n" + "\n".join(confirmations) if confirmations else "কোনো valid post পাওয়া যায়নি।")
+
+
+async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Route review feedback before attempting to parse a new schedule."""
+    if not _authorized(update) or update.message is None or not update.message.text:
+        return
+    text = update.message.text.strip()
+    metrics = _feedback_metrics(text)
+    if metrics is not None:
+        save_performance_log(metrics)
+        await update.message.reply_text("ফিডব্যাক সেভ হয়েছে।")
+        return
+
+    feedback_terms = ("rewrite", "ছোট করো", "আরেকটু ছোট করো", "আরেকটু বড় করো", "ডিটেইল করো", "বাসের জ্যামের কথা বাদ দাও", "হুক বদলাও", "বদল", "হুক")
+    pending = next((entry for entry in scheduler.active_schedule_registry.values() if entry.get("stage") == "stage_2"), None)
+    pending = pending or next((entry for entry in scheduler.active_schedule_registry.values() if entry.get("stage") == "stage_3"), None)
+    is_refinement = bool(pending and (pending.get("stage") == "stage_2" or any(term.casefold() in text.casefold() for term in feedback_terms)))
+    if is_refinement:
+        pending_data = pending.get("post_data", {})
+        product = get_product_by_name_or_alias(str(pending_data.get("product_name", "")))
+        if product is not None:
+            group = get_group_by_code(str(pending_data.get("group_code", ""))) or {}
+            old_caption = str(pending_data.get("last_caption", "")).strip()
+            if not old_caption:
+                old_caption = generate_post_content(product, group, past_history=get_recent_history(7), custom_instruction=pending_data.get("instructions") or None).get("caption", "")
+            generated = refine_caption(product, old_caption, text)
+            scheduler.update_post_copy(str(pending_data.get("parent_post_id", pending.get("post_id", ""))), generated.get("caption", ""), generated.get("first_comment", ""))
+            await update.message.reply_text(
+                f"আপডেটেড কপি:\n\nক্যাপশন:\n{generated.get('caption', '')}\n\nফার্স্ট কমেন্ট:\n{generated.get('first_comment', '')}"
+            )
+            return
+        if pending.get("stage") == "stage_2":
+            await update.message.reply_text("এই পোস্টের প্রোডাক্টটা খুঁজে পাইনি, তাই কপিটা বদলাতে পারিনি।")
+            return
+
+    try:
+        parsed = await parse_daily_plan(text, load_products(), load_groups())
+    except Exception:
+        await update.message.reply_text("প্ল্যানটা বুঝতে পারিনি। প্রোডাক্ট, সময় আর গ্রুপ কোডসহ আবার লিখে দাও।")
+        return
     if not parsed.get("success"):
         await update.message.reply_text(parsed.get("clarification_message") or "আরও একটু তথ্য দাও।")
         return

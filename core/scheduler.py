@@ -176,7 +176,7 @@ class PostScheduler:
         stages = (("stage_1", 10), ("stage_2", 5), ("stage_3", 0))
         for stage, minutes_before in stages:
             job_id = f"{post_id}:{stage}"
-            stage_data = {**post_data, "reminder_stage": stage, "parent_post_id": post_id}
+            stage_data = {**post_data, "reminder_stage": stage, "parent_post_id": post_id, "reminder_job_id": job_id}
             dispatch_time = self._parse_dispatch_time(stage_data, minutes_before)
             self.active_schedule_registry[job_id] = {
                 "post_id": post_id,
@@ -191,6 +191,19 @@ class PostScheduler:
             self._schedule_job(job_id, dispatch_time)
         self._persist_registry()
         return post_id
+
+    def update_post_copy(self, post_id: str, caption: str, first_comment: str) -> None:
+        """Persist the latest reviewed copy across every stage of a post."""
+        parent_id = str(post_id)
+        changed = False
+        for entry in self.active_schedule_registry.values():
+            if str(entry.get("post_id", "")) != parent_id and str(entry.get("post_data", {}).get("parent_post_id", "")) != parent_id:
+                continue
+            entry.setdefault("post_data", {})["last_caption"] = str(caption)
+            entry["post_data"]["last_first_comment"] = str(first_comment)
+            changed = True
+        if changed:
+            self._persist_registry()
 
     def cancel_scheduled_post(self, post_id: str) -> bool:
         """Remove a scheduled post from APScheduler and persistent storage."""

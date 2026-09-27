@@ -280,7 +280,120 @@ def generate_post_content(
     return {
         "product_id": str(product.get("id", product.get("name", ""))),
         "angle": output["angle"],
-        "caption": _without_pricing(output["caption"].strip(), product.get("price")),
-        "first_comment": _without_pricing(output["first_comment"].strip(), product.get("price")),
+        "caption": _finalize_caption(output["caption"].strip(), str(product.get("name", "এই প্রোডাক্ট")), product),
+        "first_comment": _copy_safe(output["first_comment"].strip()),
         "suggested_design_prompt": _without_pricing(output["suggested_design_prompt"].strip(), product.get("price")),
     }
+
+
+_COPY_CLICHES = (
+    "এই ছোট্ট গ্যাজেটটি ডেইলি লাইফে সত্যিই কাজে লাগবে",
+    "ভাইয়া বা আপু",
+    "কাজে লাগবে মনে হলে মেসেজ করে জানিয়ে দিন",
+    "কাজে লাগবে মনে হলে মেসেজে জানিয়ে দিন",
+    "দেরি না করে এখনি সংগ্রহ করুন",
+)
+
+
+def _copy_safe(value: Any) -> str:
+    text = _without_pricing(value)
+    for phrase in _COPY_CLICHES:
+        text = text.replace(phrase, "")
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
+
+
+def _hook(product_name: str) -> str:
+    return "বাসের জ্যাম, ক্লাস আর ডেডলাইনের ভিড়ে কোন ঝামেলাটা সবচেয়ে বেশি?\nআজকের কপিটা ঠিক সেই ক্যাম্পাস মুহূর্ত থেকেই শুরু হোক।"
+
+
+def _ensure_hook(caption: str, product_name: str) -> str:
+    body = _copy_safe(caption)
+    hook = _hook(product_name)
+    if body.startswith(hook):
+        return body
+    return f"{hook}\n\n{body}" if body else hook
+
+
+def _fallback_content(product: dict[str, Any], selected_angle: str) -> dict[str, str]:
+    warranty = str(product.get("warranty", "প্রযোজ্য ওয়ারেন্টি"))
+    name = str(product.get("name", "এই প্রোডাক্ট"))
+    specs = product.get("specs", {})
+    detail = ", ".join(f"{key}: {value}" for key, value in specs.items() if value not in (None, False))
+    caption = _ensure_hook(
+        f"ক্লাসের নোট, এসাইনমেন্ট আর বাসের জ্যাম—এই সবের মাঝে {name}-এর ফিচারগুলো বাস্তবেই কাজে আসে। {detail[:260]}। "
+        f"ক্যাম্পাসে ডেলিভারি আছে, আর ওয়ারেন্টি থাকছে {warranty}।\n\nঅর্ডার বা ডিটেইলসে: [www.feriiwala.com](http://www.feriiwala.com)",
+        name,
+    )
+    return {
+        "angle": selected_angle,
+        "caption": caption,
+        "first_comment": "তোমার ক্যাম্পাস রুটিনে কোন ফিচারটা সবচেয়ে দরকারি মনে হচ্ছে? কমেন্টে বলো।",
+        "suggested_design_prompt": "পরিষ্কার ক্যাম্পাস কপি, প্রোডাক্টের বাস্তব ফিচার, কোনো সেলসি ভাষা নয়।",
+    }
+
+
+def _refinement_fallback(product: dict[str, Any], old_caption: str, user_instruction: str) -> dict[str, str]:
+    base = _fallback_content(product, "practical_recommendation")
+    text = _copy_safe(old_caption) or base["caption"]
+    instruction = user_instruction.casefold()
+    if "বাসের জ্যাম" in user_instruction and ("বাদ" in user_instruction or "remove" in instruction):
+        text = text.replace("বাসের জ্যাম", "ক্যাম্পাসের যাতায়াত")
+    if any(term in instruction for term in ("ছোট", "short")):
+        lines = text.splitlines()
+        text = "\n".join(lines[:6])
+    elif any(term in instruction for term in ("বড়", "ডিটেইল", "detail")):
+        specs = product.get("specs", {})
+        extra = "\n".join(f"{key}: {value}" for key, value in specs.items() if value not in (None, False))
+        text = f"{text}\n{extra[:320]}"
+    final_caption = _finalize_caption(text, str(product.get("name", "এই প্রোডাক্ট")), product)
+    if "বাসের জ্যাম" in user_instruction and ("বাদ" in user_instruction or "remove" in instruction):
+        final_caption = final_caption.replace("বাসের জ্যাম", "ক্যাম্পাসের যাতায়াত")
+    return {
+        "caption": final_caption,
+        "first_comment": "এই ভার্সনটা কেমন লাগল? কোন অংশটা আরও স্বাভাবিক করা যায়, বলো।",
+    }
+
+
+def refine_caption(product: dict[str, Any], old_caption: str, user_instruction: str) -> dict[str, str]:
+    """Revise the active copy without routing feedback through the scheduler parser."""
+    if not isinstance(product, dict):
+        return {"caption": _copy_safe(old_caption), "first_comment": "কপিটা দেখে মতামত জানাও।"}
+    try:
+        from google import genai
+        from google.genai import types
+        from config import GEMINI_API_KEY
+        from core.gemini_client import DEFAULT_GEMINI_MODEL, generate_content_with_retry
+
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        prompt = (
+            "তুমি Campus Feriiwala-র ক্যাম্পাস কপি এডিটর। আগের কপিটা রেখে ব্যবহারকারীর পরিবর্তনের নির্দেশ মেনে নতুন কপি লেখো। "
+            "শুধু স্বাভাবিক বাংলা, ক্যাম্পাসের কথ্য টোন, দুই লাইনের হুক, ৩-৪টি কথোপকথনের লাইন, ওয়ারেন্টি এবং ক্যাম্পাস ডেলিভারি রাখবে। "
+            "ভাইয়া বা আপু, সেলসি বুলি, দাম, টাকা, খরচ, পুশি CTA এবং ক্রয়-ধরনের ভাষা লিখবে না। শেষে এই লাইনটি রাখবে: অর্ডার বা ডিটেইলসে: [www.feriiwala.com](http://www.feriiwala.com)\n"
+            f"প্রোডাক্ট: {_as_json(_public_product(product))}\nআগের কপি:\n{old_caption}\nব্যবহারকারীর নির্দেশ: {user_instruction}\n"
+            "JSON দাও: {\"caption\":\"...\",\"first_comment\":\"...\"}"
+        )
+        response = generate_content_with_retry(
+            client,
+            model=DEFAULT_GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.4),
+        )
+        result = json.loads(response.text or "{}")
+        if isinstance(result, dict) and result.get("caption"):
+            safe_revision = _refinement_fallback(product, _copy_safe(result["caption"]), user_instruction)
+            return {
+                "caption": safe_revision["caption"],
+                "first_comment": _copy_safe(result.get("first_comment", safe_revision["first_comment"])),
+            }
+    except Exception:
+        pass
+    return _refinement_fallback(product, old_caption, user_instruction)
+
+
+def _finalize_caption(caption: str, product_name: str, product: dict[str, Any]) -> str:
+    """Apply the same peer-to-peer structure to model and offline copy."""
+    finalized = _ensure_hook(caption, product_name)
+    if "www.feriiwala.com" not in finalized:
+        warranty = str(product.get("warranty", "প্রযোজ্য ওয়ারেন্টি"))
+        finalized = f"{finalized}\n\nওয়ারেন্টি: {warranty}। ক্যাম্পাস ডেলিভারি আছে।\nঅর্ডার বা ডিটেইলসে: [www.feriiwala.com](http://www.feriiwala.com)"
+    return _copy_safe(finalized)
