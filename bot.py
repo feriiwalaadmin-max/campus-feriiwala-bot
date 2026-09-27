@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
+import threading
 import uuid
 from datetime import datetime
 from typing import Any
 
 import pytz
+from flask import Flask
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
@@ -25,6 +28,17 @@ from core.parser import parse_daily_plan
 from core.scheduler import scheduler
 
 _application: Application | None = None
+app = Flask(__name__)
+
+
+@app.route("/")
+def health() -> tuple[str, int]:
+    return "Campus Feriiwala Bot is running!", 200
+
+
+def _start_health_server() -> None:
+    port = int(os.environ.get("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 
 def _authorized(update: Update) -> bool:
@@ -190,6 +204,7 @@ def build_application() -> Application:
 
 
 def main() -> None:
+    threading.Thread(target=_start_health_server, name="health-server", daemon=True).start()
     application = build_application()
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_text))
     application.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
