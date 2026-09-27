@@ -321,7 +321,7 @@ def _fallback_content(product: dict[str, Any], selected_angle: str) -> dict[str,
     detail = ", ".join(f"{key}: {value}" for key, value in specs.items() if value not in (None, False))
     caption = _ensure_hook(
         f"ক্লাসের নোট, এসাইনমেন্ট আর বাসের জ্যাম—এই সবের মাঝে {name}-এর ফিচারগুলো বাস্তবেই কাজে আসে। {detail[:260]}। "
-        f"ক্যাম্পাসে ডেলিভারি আছে, আর ওয়ারেন্টি থাকছে {warranty}।\n\nঅর্ডার বা ডিটেইলসে: [www.feriiwala.com](http://www.feriiwala.com)",
+        f"ক্যাম্পাসে ডেলিভারি আছে, আর ওয়ারেন্টি থাকছে {warranty}।\n\nঅর্ডার বা ডিটেইলসে: www.feriiwala.com",
         name,
     )
     return {
@@ -368,7 +368,7 @@ def refine_caption(product: dict[str, Any], old_caption: str, user_instruction: 
         prompt = (
             "তুমি Campus Feriiwala-র ক্যাম্পাস কপি এডিটর। আগের কপিটা রেখে ব্যবহারকারীর পরিবর্তনের নির্দেশ মেনে নতুন কপি লেখো। "
             "শুধু স্বাভাবিক বাংলা, ক্যাম্পাসের কথ্য টোন, দুই লাইনের হুক, ৩-৪টি কথোপকথনের লাইন, ওয়ারেন্টি এবং ক্যাম্পাস ডেলিভারি রাখবে। "
-            "ভাইয়া বা আপু, সেলসি বুলি, দাম, টাকা, খরচ, পুশি CTA এবং ক্রয়-ধরনের ভাষা লিখবে না। শেষে এই লাইনটি রাখবে: অর্ডার বা ডিটেইলসে: [www.feriiwala.com](http://www.feriiwala.com)\n"
+            "ভাইয়া বা আপু, সেলসি বুলি, দাম, টাকা, খরচ, পুশি CTA এবং ক্রয়-ধরনের ভাষা লিখবে না। শেষে এই লাইনটি রাখবে: অর্ডার বা ডিটেইলসে: www.feriiwala.com\n"
             f"প্রোডাক্ট: {_as_json(_public_product(product))}\nআগের কপি:\n{old_caption}\nব্যবহারকারীর নির্দেশ: {user_instruction}\n"
             "JSON দাও: {\"caption\":\"...\",\"first_comment\":\"...\"}"
         )
@@ -390,10 +390,21 @@ def refine_caption(product: dict[str, Any], old_caption: str, user_instruction: 
     return _refinement_fallback(product, old_caption, user_instruction)
 
 
+def _normalize_website_footer(caption: str) -> str:
+    """Keep one plain-text website footer at the very end of the caption."""
+    text = str(caption or "")
+    text = re.sub(r"\[\s*www\.feriiwala\.com\s*\]\([^)]*\)", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"https?://(?:www\.)?feriiwala\.com/?", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bwww\.feriiwala\.com\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"অর্ডার\s+বা\s+ডিটেইলসে\s*:\s*", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return f"{text}\n\nঅর্ডার বা ডিটেইলসে: www.feriiwala.com"
+
+
 def _finalize_caption(caption: str, product_name: str, product: dict[str, Any]) -> str:
     """Apply the same peer-to-peer structure to model and offline copy."""
     finalized = _ensure_hook(caption, product_name)
     if "www.feriiwala.com" not in finalized:
         warranty = str(product.get("warranty", "প্রযোজ্য ওয়ারেন্টি"))
-        finalized = f"{finalized}\n\nওয়ারেন্টি: {warranty}। ক্যাম্পাস ডেলিভারি আছে।\nঅর্ডার বা ডিটেইলসে: [www.feriiwala.com](http://www.feriiwala.com)"
-    return _copy_safe(finalized)
+        finalized = f"{finalized}\n\nওয়ারেন্টি: {warranty}। ক্যাম্পাস ডেলিভারি আছে।"
+    return _normalize_website_footer(finalized)
