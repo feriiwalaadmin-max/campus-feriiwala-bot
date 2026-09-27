@@ -126,6 +126,8 @@ class PostScheduler:
             raise RuntimeError("PostScheduler has not been started. Call start() first.")
 
     def _schedule_job(self, post_id: str, dispatch_time: datetime) -> None:
+        if dispatch_time <= datetime.now(self.timezone):
+            return
         self.scheduler.add_job(
             self._run_callback,
             trigger="date",
@@ -133,9 +135,28 @@ class PostScheduler:
             args=[post_id],
             id=post_id,
             replace_existing=True,
-            misfire_grace_time=MISFIRE_GRACE_TIME,
+            misfire_grace_time=30,
+            coalesce=True,
             max_instances=1,
         )
+
+    def seconds_until_post(self, post_data: dict[str, Any]) -> float:
+        """Return seconds until T-0 in the scheduler timezone."""
+        return (self._parse_dispatch_time(post_data, 0) - datetime.now(self.timezone)).total_seconds()
+
+    def plan_stages(self, post_data: dict[str, Any]) -> list[tuple[str, datetime]]:
+        """Choose only future reminder stages for the post's current lead time."""
+        target = self._parse_dispatch_time(post_data, 0)
+        remaining = (target - datetime.now(self.timezone)).total_seconds()
+        if remaining <= 0:
+            return []
+        if remaining <= 5 * 60:
+            offsets = (("stage_3", 0),)
+        elif remaining < 10 * 60:
+            offsets = (("stage_2", 5), ("stage_3", 0))
+        else:
+            offsets = (("stage_1", 10), ("stage_2", 5), ("stage_3", 0))
+        return [(stage, target - timedelta(minutes=minutes_before)) for stage, minutes_before in offsets if target - timedelta(minutes=minutes_before) > datetime.now(self.timezone)]
 
     def restore_scheduled_posts(self, callback_func: Callback) -> int:
         """Re-register persisted posts after a process restart.
@@ -148,17 +169,25 @@ class PostScheduler:
         if not callable(callback_func):
             raise TypeError("callback_func must be callable.")
         restored = 0
+        expired: list[str] = []
         for post_id, entry in self.active_schedule_registry.items():
             try:
                 dispatch_time = datetime.fromisoformat(str(entry["dispatch_time"]))
                 if dispatch_time.tzinfo is None:
                     dispatch_time = self.timezone.localize(dispatch_time)
+                if dispatch_time <= datetime.now(self.timezone):
+                    expired.append(post_id)
+                    continue
                 job_id = str(entry.get("job_id", post_id))
                 self._callbacks[job_id] = callback_func
                 self._schedule_job(job_id, dispatch_time)
                 restored += 1
             except (KeyError, TypeError, ValueError):
                 continue
+        for post_id in expired:
+            self.active_schedule_registry.pop(post_id, None)
+        if expired:
+            self._persist_registry()
         return restored
 
     def add_scheduled_post(self, post_data: dict, callback_func: Callback) -> str:
@@ -173,11 +202,10 @@ class PostScheduler:
                 raise ValueError(f"Missing required post field: {field}")
 
         post_id = str(post_data.get("post_id") or uuid.uuid4())
-        stages = (("stage_1", 10), ("stage_2", 5), ("stage_3", 0))
-        for stage, minutes_before in stages:
+        target_plan = self.plan_stages(post_data)
+        for stage, dispatch_time in target_plan:
             job_id = f"{post_id}:{stage}"
             stage_data = {**post_data, "reminder_stage": stage, "parent_post_id": post_id, "reminder_job_id": job_id}
-            dispatch_time = self._parse_dispatch_time(stage_data, minutes_before)
             self.active_schedule_registry[job_id] = {
                 "post_id": post_id,
                 "job_id": job_id,
@@ -246,7 +274,8 @@ class PostScheduler:
             trigger=CronTrigger(hour=hour, minute=minute, timezone=self.timezone),
             id=MORNING_JOB_ID,
             replace_existing=True,
-            misfire_grace_time=MISFIRE_GRACE_TIME,
+            misfire_grace_time=30,
+            coalesce=True,
             max_instances=1,
         )
 

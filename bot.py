@@ -28,6 +28,7 @@ from core.parser import parse_daily_plan
 from core.scheduler import scheduler
 
 _application: Application | None = None
+_refinement_parents: set[str] = set()
 app = Flask(__name__)
 
 
@@ -71,6 +72,7 @@ async def _send_post_dispatch(post_data: dict[str, Any]) -> None:
     """Deliver one non-blocking text-only reminder stage."""
     if _application is None:
         return
+    global _refinement_parents
     stage = str(post_data.get("reminder_stage", "stage_3"))
     name = str(post_data.get("product_name", post_data.get("product_id", "প্রোডাক্ট")))
     group = get_group_by_code(str(post_data.get("group_code", "")))
@@ -104,6 +106,7 @@ async def _send_post_dispatch(post_data: dict[str, Any]) -> None:
 
     if stage == "stage_2":
         scheduler.update_post_copy(str(post_data.get("parent_post_id", "")), generated.get("caption", ""), generated.get("first_comment", ""))
+        _refinement_parents.add(str(post_data.get("parent_post_id", "")))
         await _application.bot.send_message(
             chat_id=TELEGRAM_ADMIN_CHAT_ID,
             text=(
@@ -189,6 +192,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Route review feedback before attempting to parse a new schedule."""
+    global _refinement_parents
     if not _authorized(update) or update.message is None or not update.message.text:
         return
     text = update.message.text.strip()
@@ -199,9 +203,8 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     feedback_terms = ("rewrite", "ছোট করো", "আরেকটু ছোট করো", "আরেকটু বড় করো", "ডিটেইল করো", "বাসের জ্যামের কথা বাদ দাও", "হুক বদলাও", "বদল", "হুক")
-    pending = next((entry for entry in scheduler.active_schedule_registry.values() if entry.get("stage") == "stage_2"), None)
-    pending = pending or next((entry for entry in scheduler.active_schedule_registry.values() if entry.get("stage") == "stage_3"), None)
-    is_refinement = bool(pending and (pending.get("stage") == "stage_2" or any(term.casefold() in text.casefold() for term in feedback_terms)))
+    pending = _active_refinement_entry()
+    is_refinement = bool(pending and any(term.casefold() in text.casefold() for term in feedback_terms))
     if is_refinement:
         pending_data = pending.get("post_data", {})
         product = get_product_by_name_or_alias(str(pending_data.get("product_name", "")))
@@ -231,6 +234,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     today = _local_now().date().isoformat()
     confirmations: list[str] = []
+    _refinement_parents.clear()
     for post in parsed.get("scheduled_posts", []):
         post_data = {
             "post_id": str(uuid.uuid4()),
@@ -241,10 +245,47 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "date": str(post.get("date") or post.get("target_date") or today),
             "instructions": post.get("instructions", text),
         }
+        remaining = scheduler.seconds_until_post(post_data)
+        if remaining <= 0:
+            confirmations.append(f"সময়টি ইতিমধ্যে পেরিয়ে গেছে — {post_data['product_name']} আবার নতুন সময় দিয়ে শিডিউল করুন।")
+            continue
         scheduler.add_scheduled_post(post_data, _send_post_dispatch)
         save_content_history({**post_data, "status": "SCHEDULED"})
-        confirmations.append(f"• {post_data['date']} {post_data['scheduled_time']} — {post_data['product_name']} — {_group_name(post_data['group_code'])}")
+        if remaining < 10 * 60 and remaining > 5 * 60:
+            confirmations.append("পোস্ট শিডিউল করা হয়েছে! ৫ মিনিট আগে ক্যাপশন পেয়ে যাবে।")
+        elif remaining <= 5 * 60 and remaining > 0:
+            product = get_product_by_name_or_alias(post_data["product_name"])
+            group = get_group_by_code(str(post_data.get("group_code", ""))) or {}
+            if product is not None:
+                generated = generate_post_content(product, group, past_history=get_recent_history(7), custom_instruction=post_data.get("instructions") or None)
+                scheduler.update_post_copy(post_data["post_id"], generated.get("caption", ""), generated.get("first_comment", ""))
+                _refinement_parents.add(post_data["post_id"])
+                confirmations.append(
+                    "পোস্ট শিডিউল করা হয়েছে! এখনই ক্যাপশন প্যাকেজ দেখে নাও:\n\n"
+                    f"ক্যাপশন:\n{generated.get('caption', '')}\n\nফার্স্ট কমেন্ট:\n{generated.get('first_comment', '')}"
+                )
+            else:
+                confirmations.append("পোস্টের সময় খুব কাছাকাছি, কিন্তু প্রোডাক্টটি খুঁজে পাওয়া যায়নি।")
+        else:
+            confirmations.append(f"• {post_data['date']} {post_data['scheduled_time']} — {post_data['product_name']} — {_group_name(post_data['group_code'])}")
     await update.message.reply_text("📋 শিডিউল কনফার্মড:\n" + "\n".join(confirmations) if confirmations else "কোনো valid post পাওয়া যায়নি।")
+
+
+def _active_refinement_entry() -> dict[str, Any] | None:
+    """Return only a reviewed, not-yet-due Stage 3 post."""
+    for entry in scheduler.active_schedule_registry.values():
+        if entry.get("stage") != "stage_3":
+            continue
+        post_data = entry.get("post_data", {})
+        parent_id = str(post_data.get("parent_post_id", entry.get("post_id", "")))
+        if parent_id not in _refinement_parents or not str(post_data.get("last_caption", "")).strip():
+            continue
+        try:
+            if scheduler.seconds_until_post(post_data) > 0:
+                return entry
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 async def _post_init(application: Application) -> None:
