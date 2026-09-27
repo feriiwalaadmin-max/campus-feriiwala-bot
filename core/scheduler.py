@@ -257,6 +257,22 @@ class PostScheduler:
         self._persist_registry()
         return removed
 
+    def clear_all_scheduled_posts(self) -> int:
+        """Cancel every pending post job and clear its persisted queue."""
+        job_ids = set(self.active_schedule_registry) | set(self._callbacks)
+        job_ids.update(job.id for job in self.scheduler.get_jobs())
+        for job_id in job_ids:
+            try:
+                self.scheduler.remove_job(job_id)
+            except Exception:
+                pass
+        removed = len(self.active_schedule_registry)
+        self.active_schedule_registry.clear()
+        self._callbacks.clear()
+        self._morning_callback = None
+        self._persist_registry()
+        return removed
+
     def reschedule_post(self, post_id: str, new_time: str, callback_func: Callback) -> bool:
         """Update a post's scheduled time and re-register its seven-minute dispatch job."""
         self._ensure_started()
@@ -326,6 +342,10 @@ def add_scheduled_post(post_data: dict, callback_func: Callback) -> str:
 
 def cancel_scheduled_post(post_id: str) -> bool:
     return scheduler.cancel_scheduled_post(post_id)
+
+
+def clear_all_scheduled_posts() -> int:
+    return scheduler.clear_all_scheduled_posts()
 
 
 def reschedule_post(post_id: str, new_time: str, callback_func: Callback) -> bool:

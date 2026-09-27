@@ -12,7 +12,7 @@ from typing import Any
 
 from flask import Flask
 from telegram import LinkPreviewOptions, Update
-from telegram.ext import Application, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from zoneinfo import ZoneInfo
 
 from config import TELEGRAM_ADMIN_CHAT_ID, TELEGRAM_BOT_TOKEN
@@ -169,6 +169,23 @@ async def _reply(update: Update, text: str) -> None:
     await update.message.reply_text(text, link_preview_options=NO_LINK_PREVIEW)
 
 
+RESET_CONFIRMATION = "সব পূর্ববর্তী শিডিউল বাতিল করা হয়েছে এবং মেমোরি সম্পূর্ণ ক্লিয়ার করা হয়েছে।"
+RESET_TEXTS = {"স্টপ", "সব ক্লিয়ার করো", "ক্লিয়ার", "সব ক্লিয়ার"}
+
+
+def _is_reset_request(text: str) -> bool:
+    return text.casefold().strip() in RESET_TEXTS
+
+
+async def _clear_all_state(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authorized(update) or update.message is None:
+        return
+    scheduler.clear_all_scheduled_posts()
+    active_post_context.clear()
+    _refinement_parents.clear()
+    await _reply(update, RESET_CONFIRMATION)
+
+
 def _chat_id(update: Update) -> int | None:
     return update.effective_chat.id if update.effective_chat else None
 
@@ -177,6 +194,9 @@ async def _handle_text_legacy(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not _authorized(update) or update.message is None or not update.message.text:
         return
     text = update.message.text.strip()
+    if _is_reset_request(text):
+        await _clear_all_state(update, context)
+        return
     metrics = _feedback_metrics(text)
     if metrics is not None:
         save_performance_log(metrics)
@@ -233,7 +253,14 @@ async def _handle_text_legacy(update: Update, context: ContextTypes.DEFAULT_TYPE
         scheduler.add_scheduled_post(post_data, _send_post_dispatch)
         save_content_history({**post_data, "status": "SCHEDULED"})
         confirmations.append(f"• {post_data['date']} {post_data['scheduled_time']} — {post_data['product_name']} — {_group_name(post_data['group_code'])}")
-    await _reply(update, "📋 শিডিউল কনফার্মড:\n" + "\n".join(confirmations) if confirmations else "কোনো valid post পাওয়া যায়নি।")
+    if parsed.get("schedule_days"):
+        first_day_posts = [post for post in parsed.get("scheduled_posts", []) if int(post.get("day_number", 0)) == 1]
+        first_day_posts.sort(key=lambda post: post.get("time", ""))
+        first_time = first_day_posts[0].get("time", "") if first_day_posts else ""
+        summary = f"মোট {parsed.get('schedule_days')} দিনের {parsed.get('total_events', len(confirmations))}টি পোস্ট সফলভাবে শিডিউল করা হয়েছে। দিন ১ শুরু হবে আগামীকাল {first_time} টায়।"
+        await _reply(update, summary + ("\n\n" + "\n".join(confirmations) if confirmations else ""))
+    else:
+        await _reply(update, "📋 শিডিউল কনফার্মড:\n" + "\n".join(confirmations) if confirmations else "কোনো valid post পাওয়া যায়নি।")
 
 
 async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -242,6 +269,9 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not _authorized(update) or update.message is None or not update.message.text:
         return
     text = update.message.text.strip()
+    if _is_reset_request(text):
+        await _clear_all_state(update, context)
+        return
     metrics = _feedback_metrics(text)
     if metrics is not None:
         save_performance_log(metrics)
@@ -340,7 +370,14 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 confirmations.append("পোস্টের সময় খুব কাছাকাছি, কিন্তু প্রোডাক্টটি খুঁজে পাওয়া যায়নি।")
         else:
             confirmations.append(f"• {post_data['date']} {post_data['scheduled_time']} — {post_data['product_name']} — {_group_name(post_data['group_code'])}")
-    await _reply(update, "📋 শিডিউল কনফার্মড:\n" + "\n".join(confirmations) if confirmations else "কোনো valid post পাওয়া যায়নি।")
+    if parsed.get("schedule_days"):
+        first_day_posts = [post for post in parsed.get("scheduled_posts", []) if int(post.get("day_number", 0)) == 1]
+        first_day_posts.sort(key=lambda post: post.get("time", ""))
+        first_time = first_day_posts[0].get("time", "") if first_day_posts else ""
+        summary = f"মোট {parsed.get('schedule_days')} দিনের {parsed.get('total_events', len(confirmations))}টি পোস্ট সফলভাবে শিডিউল করা হয়েছে। দিন ১ শুরু হবে আগামীকাল {first_time} টায়।"
+        await _reply(update, summary + ("\n\n" + "\n".join(confirmations) if confirmations else ""))
+    else:
+        await _reply(update, "📋 শিডিউল কনফার্মড:\n" + "\n".join(confirmations) if confirmations else "কোনো valid post পাওয়া যায়নি।")
 
 
 def _active_refinement_entry(chat_id: int | None) -> dict[str, Any] | None:
@@ -391,6 +428,7 @@ def main() -> None:
     threading.Thread(target=_start_health_server, name="health-server", daemon=True).start()
     threading.Thread(target=_keep_health_server_awake, name="health-keepalive", daemon=True).start()
     application = build_application()
+    application.add_handler(CommandHandler(("stop", "clear"), _clear_all_state))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_text))
     application.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
 

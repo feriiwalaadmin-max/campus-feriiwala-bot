@@ -18,6 +18,12 @@ TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 _DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
 _SPACE_RE = re.compile(r"\s+")
 _TIME_TOKEN_RE = re.compile(r"(?P<hour>\d{1,2})(?:\s*[:.]\s*(?P<minute>\d{2}))?\s*(?P<ampm>a\.?m\.?|p\.?m\.?|am|pm)?", re.I)
+_CLOCK_WORDS = {
+    "একটা": "1", "দুইটা": "2", "তিনটা": "3", "চারটা": "4", "পাঁচটা": "5", "ছয়টা": "6",
+    "সাতটা": "7", "আটটা": "8", "নয়টা": "9", "দশটা": "10", "এগারোটা": "11", "বারোটা": "12",
+    "এক": "1", "দুই": "2", "তিন": "3", "চার": "4", "পাঁচ": "5", "ছয়": "6", "সাত": "7",
+    "আট": "8", "নয়": "9", "দশ": "10", "এগারো": "11", "বারো": "12",
+}
 _BANGLA_PHONETICS = str.maketrans({
     "অ": "o", "আ": "a", "ই": "i", "ঈ": "i", "উ": "u", "ঊ": "u", "এ": "e", "ঐ": "oi", "ও": "o", "ঔ": "ou",
     "ক": "k", "খ": "kh", "গ": "g", "ঘ": "gh", "ঙ": "ng", "চ": "ch", "ছ": "chh", "জ": "j", "ঝ": "jh", "ঞ": "n",
@@ -45,6 +51,7 @@ _PERIOD_ALIASES = {
     "\u09b8\u09a8\u09cd\u09a7\u09cd\u09af\u09be": "evening",
     "\u09b8\u09a8\u09cd\u09a7\u09cd\u09af\u09be\u09df": "evening",
     "\u09ac\u09bf\u0995\u09be\u09b2": "evening", "\u09ac\u09bf\u0995\u09be\u09b2\u09c7": "evening",
+    "\u09ac\u09bf\u0995\u09c7\u09b2": "evening", "\u09ac\u09bf\u0995\u09c7\u09b2\u09c7": "evening", "bikel": "evening", "bikele": "evening",
     "\u09a6\u09c1\u09aa\u09c1\u09b0": "afternoon",
     "\u09a6\u09c1\u09aa\u09c1\u09b0\u09c7": "afternoon",
 }
@@ -169,6 +176,8 @@ def _period(text: str) -> str | None:
 
 def _parse_time(value: Any, context: str = "") -> str | None:
     text = " ".join(part for part in (_clean(value), _clean(context)) if part)
+    for word, number in sorted(_CLOCK_WORDS.items(), key=lambda item: len(item[0]), reverse=True):
+        text = re.sub(rf"(?<!\w){re.escape(word)}(?!\w)", number, text)
     if not text:
         return None
     direct = re.search(r"(?<!\d)([01]?\d|2[0-3])\s*[:.]\s*([0-5]\d)(?!\d)", text)
@@ -215,6 +224,59 @@ def _catalog_text(items: list[Any]) -> str:
 
 def _clarification(message: str) -> dict[str, Any]:
     return _result(success=False, needs_clarification=True, clarification_message=message)
+
+
+def _structured_multi_day_fallback(user_text: str, products: list[Any], groups: list[Any]) -> dict[str, Any] | None:
+    """Parse explicit দিন N blocks deterministically before model parsing."""
+    if not re.search(r"(?m)^\s*দিন\s*[০-৯\d]+", user_text):
+        return None
+    block_pattern = re.compile(r"(?ms)^\s*দিন\s*([০-৯\d]+)\s*:?[ \t]*\n(.*?)(?=^\s*দিন\s*[০-৯\d]+\s*:?[ \t]*\n|\Z)")
+    now = datetime.now(BD_TZ)
+    posts: list[dict[str, Any]] = []
+    max_day = 0
+    for match in block_pattern.finditer(user_text):
+        day_number = int(match.group(1).translate(_DIGITS))
+        if day_number < 1:
+            continue
+        max_day = max(max_day, day_number)
+        target_date = now.date() + timedelta(days=day_number)
+        for raw_line in match.group(2).splitlines():
+            line = raw_line.strip().strip("-")
+            if not line:
+                continue
+            fields = [field.strip() for field in re.split(r"\s*,\s*", line) if field.strip()]
+            time_text = fields[0] if fields else line
+            platform = fields[1] if len(fields) >= 3 else ""
+            product_text = " ".join(fields[2:]) if len(fields) >= 3 else line
+            parsed_time = _parse_time(time_text, line)
+            product = _resolve_product(product_text, products) or _resolve_product(line, products)
+            if product is None or parsed_time is None:
+                continue
+            group_code = _resolve_group(platform, groups) if platform else None
+            target_datetime = datetime.combine(
+                target_date,
+                datetime.strptime(parsed_time, "%H:%M").time(),
+                tzinfo=BD_TZ,
+            )
+            posts.append({
+                "product_id": product[0],
+                "product_name": product[1],
+                "product_code": product[0],
+                "time": parsed_time,
+                "date": target_date.isoformat(),
+                "target_date": target_date.isoformat(),
+                "target_datetime": target_datetime.isoformat(),
+                "group_code": group_code or platform or None,
+                "platform": platform or None,
+                "campus": platform or None,
+                "day_number": day_number,
+                "instructions": user_text.strip(),
+            })
+    if not posts:
+        return _clarification("দিনভিত্তিক প্ল্যানে প্রতিটি লাইনে সময়, ক্যাম্পাস/পেজ এবং প্রোডাক্ট দিন।")
+    result = _result(success=True, scheduled_posts=posts)
+    result.update({"schedule_days": max_day, "total_events": len(posts), "start_date": (now.date() + timedelta(days=1)).isoformat()})
+    return result
 
 
 def _weekly_fallback(user_text: str, products: list[Any], groups: list[Any]) -> list[dict[str, Any]]:
@@ -321,6 +383,9 @@ def _parse_daily_plan_sync(user_text: str, available_products: list[Any], availa
         return _clarification("কোন পণ্য, কখন এবং কোন গ্রুপে পোস্ট করতে হবে তা লিখুন।")
     if not isinstance(available_products, list) or not isinstance(available_groups, list):
         return _clarification("পণ্য ও গ্রুপের তালিকা পাওয়া যায়নি।")
+    structured_plan = _structured_multi_day_fallback(user_text, available_products, available_groups)
+    if structured_plan is not None:
+        return structured_plan
     if _period(user_text) and not re.search(r"\d", user_text.translate(_DIGITS)):
         return _clarification("কোন সময়টি বোঝাচ্ছেন? যেমন: সন্ধ্যা ৭টা বা রাত ৯টা লিখুন।")
     try:
