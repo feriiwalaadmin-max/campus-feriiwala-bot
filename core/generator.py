@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import random
+import threading
+from pathlib import Path
 from typing import Any
 
 
@@ -31,6 +34,64 @@ BASE_BANNED_PHRASES = (
 _PRICING_RE = re.compile(
     r"(?i)(?:৳|\u09f3|\b(?:tk|bdt|price|pricing|cost|দাম|মূল্য)\b)\s*[:=-]?\s*[\d,]*(?:\.\d+)?|\b(?:tk|bdt|price|pricing|cost)\b"
 )
+HISTORY_PATH = Path(__file__).resolve().parents[1] / "generated_history.json"
+_HISTORY_LOCK = threading.Lock()
+MAX_HISTORY_PER_PRODUCT = 50
+CAMPUS_CONTEXTS = (
+    "লাইব্রেরিতে চুপচাপ ক্র্যাম করতে গিয়ে ছোট্ট কোন ঝামেলাটা মাথা খায়?\nআজকের কপিটা সেই নীরব পড়ার সময়ের গল্প দিয়ে শুরু হোক।",
+    "বাসের কমিউট, এক হাতে ব্যাগ আর আরেক হাতে ফোন—ক্যাম্পাসে এমন মুহূর্ত তো রোজই আসে।\nআজকের কপিটা সেই যাতায়াতের বাস্তব ঝামেলা থেকে শুরু হোক।",
+    "ডিপার্টমেন্টের আড্ডা হঠাৎ ক্লাসে ঢুকে যায়, আর গুছিয়ে থাকার সময় থাকে না।\nআজকের কপিটা সেই ব্যস্ত বিরতির গল্প দিয়ে শুরু হোক।",
+    "ল্যাব ভাইভার আগে সবাই দৌড়াচ্ছে, মাথায় শুধু শেষ মুহূর্তের কাজ।\nআজকের কপিটা সেই তাড়াহুড়োর ক্যাম্পাস মুহূর্ত থেকে শুরু হোক।",
+    "হোস্টেলের রাতে অ্যাসাইনমেন্ট জমা দেওয়ার সময় ছোট জিনিসের ঝামেলাই বড় লাগে।\nআজকের কপিটা সেই রাত জাগা রুটিনের গল্প দিয়ে শুরু হোক।",
+    "হঠাৎ পাওয়ার কাট, সামনে ডেডলাইন—স্টুডেন্ট লাইফে প্ল্যান সবসময় মতো চলে না।\nআজকের কপিটা সেই অপ্রস্তুত মুহূর্ত থেকেই শুরু হোক।",
+)
+
+
+def _history_key(product: dict[str, Any]) -> str:
+    return str(product.get("id") or product.get("product_id") or product.get("name") or "unknown").strip().casefold()
+
+
+def _load_generation_history() -> dict[str, list[dict[str, str]]]:
+    try:
+        data = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _recent_generation_history(product: dict[str, Any]) -> list[dict[str, str]]:
+    with _HISTORY_LOCK:
+        history = _load_generation_history()
+        entries = history.get(_history_key(product), [])
+        return entries[-MAX_HISTORY_PER_PRODUCT:] if isinstance(entries, list) else []
+
+
+def _remember_generation(product: dict[str, Any], caption: str, angle: str) -> None:
+    clean_caption = _without_pricing(caption, product.get("price"))
+    if not clean_caption:
+        return
+    lines = [line.strip() for line in clean_caption.splitlines() if line.strip()]
+    record = {
+        "caption": clean_caption[:700],
+        "hook": " ".join(lines[:2])[:300],
+        "angle": str(angle),
+    }
+    with _HISTORY_LOCK:
+        history = _load_generation_history()
+        key = _history_key(product)
+        entries = history.get(key, [])
+        if not isinstance(entries, list):
+            entries = []
+        entries = [entry for entry in entries if isinstance(entry, dict) and entry.get("caption") != record["caption"]]
+        history[key] = (entries + [record])[-MAX_HISTORY_PER_PRODUCT:]
+        try:
+            HISTORY_PATH.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+
+
+def _random_campus_context() -> str:
+    return random.choice(CAMPUS_CONTEXTS)
 
 
 def _without_pricing(value: Any, product_price: Any = None) -> str:
@@ -216,6 +277,8 @@ def generate_post_content(
 
     recent_angles = _recent_angles(past_history)
     selected_angle = _choose_angle(recent_angles)
+    campus_context = _random_campus_context()
+    recent_generation = _recent_generation_history(product)
     banned = _banned_phrases(custom_instruction)
     instruction = custom_instruction or "কোনো অতিরিক্ত নির্দেশনা নেই।"
 
@@ -235,12 +298,19 @@ def generate_post_content(
         " Output must be written in pure Bengali script, with natural campus loan words such as ইউজ, ডেইলি লাইফ, ক্লাস, এক্সাম, এসাইনমেন্ট, বাসের জ্যাম, চার্জ ব্যাকআপ. "
         "Never use sadhu or textbook wording such as ব্যবহার, দৈনন্দিন জীবন, or ক্রয় করুন. Tailor the two-line hook and body to the user's custom topic or style instruction when provided."
     )
+    system_prompt += (
+        " CRITICAL GUARDRAIL: Below are previously generated captions/hooks for this product: "
+        f"{_as_json(recent_generation)} "
+        "You are STRICTLY FORBIDDEN from reusing any of these ideas, opening phrases, hooks, or narrative angles. "
+        "Every single post must be an entirely unique, fresh campus micro-story never told before."
+    )
     user_prompt = (
         f"Required angle: {selected_angle}\n"
         f"Recent angles from the last 7 days: {_as_json(recent_angles)}\n"
         f"Product facts (only source of product facts): {_as_json(_public_product(product))}\n"
         f"Target group: {_as_json(group)}\n"
         f"Custom instruction: {instruction}\n"
+        f"Fresh randomized student context for this post: {campus_context}\n"
         "Create the caption, a useful first comment, and a concise visual design prompt."
     )
 
@@ -261,29 +331,35 @@ def generate_post_content(
             ),
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                temperature=0.7,
+                temperature=0.85,
             ),
         )
         output = json.loads(response.text or "{}")
         if not isinstance(output, dict):
             raise ValueError("The structured response was not a JSON object.")
     except Exception:
-        return {"product_id": str(product.get("id", product.get("name", ""))), **_fallback_content(product, selected_angle)}
+        fallback = _fallback_content(product, selected_angle)
+        _remember_generation(product, fallback["caption"], selected_angle)
+        return {"product_id": str(product.get("id", product.get("name", ""))), **fallback}
 
-    output["caption"] = _ensure_hook(output.get("caption", ""), str(product.get("name", "product")))
+    output["caption"] = _ensure_hook(output.get("caption", ""), str(product.get("name", "product")), campus_context)
     output["first_comment"] = _without_pricing(output.get("first_comment", ""), product.get("price"))
     output["suggested_design_prompt"] = _without_pricing(output.get("suggested_design_prompt", ""), product.get("price"))
     validation_error = _validate_output(output, selected_angle, custom_instruction)
     if validation_error:
-        return {"product_id": str(product.get("id", product.get("name", ""))), **_fallback_content(product, selected_angle)}
+        fallback = _fallback_content(product, selected_angle)
+        _remember_generation(product, fallback["caption"], selected_angle)
+        return {"product_id": str(product.get("id", product.get("name", ""))), **fallback}
 
-    return {
+    result = {
         "product_id": str(product.get("id", product.get("name", ""))),
         "angle": output["angle"],
         "caption": _finalize_caption(output["caption"].strip(), str(product.get("name", "এই প্রোডাক্ট")), product),
         "first_comment": _copy_safe(output["first_comment"].strip()),
         "suggested_design_prompt": _without_pricing(output["suggested_design_prompt"].strip(), product.get("price")),
     }
+    _remember_generation(product, result["caption"], result["angle"])
+    return result
 
 
 _COPY_CLICHES = (
@@ -302,13 +378,13 @@ def _copy_safe(value: Any) -> str:
     return re.sub(r"[ \t]{2,}", " ", text).strip()
 
 
-def _hook(product_name: str) -> str:
-    return "বাসের জ্যাম, ক্লাস আর ডেডলাইনের ভিড়ে কোন ঝামেলাটা সবচেয়ে বেশি?\nআজকের কপিটা ঠিক সেই ক্যাম্পাস মুহূর্ত থেকেই শুরু হোক।"
+def _hook(product_name: str, campus_context: str | None = None) -> str:
+    return campus_context or _random_campus_context()
 
 
-def _ensure_hook(caption: str, product_name: str) -> str:
+def _ensure_hook(caption: str, product_name: str, campus_context: str | None = None) -> str:
     body = _copy_safe(caption)
-    hook = _hook(product_name)
+    hook = _hook(product_name, campus_context)
     if body.startswith(hook):
         return body
     return f"{hook}\n\n{body}" if body else hook
@@ -321,7 +397,7 @@ def _fallback_content(product: dict[str, Any], selected_angle: str) -> dict[str,
     detail = ", ".join(f"{key}: {value}" for key, value in specs.items() if value not in (None, False))
     caption = _ensure_hook(
         f"ক্লাসের নোট, এসাইনমেন্ট আর বাসের জ্যাম—এই সবের মাঝে {name}-এর ফিচারগুলো বাস্তবেই কাজে আসে। {detail[:260]}। "
-        f"ক্যাম্পাসে ডেলিভারি আছে, আর ওয়ারেন্টি থাকছে {warranty}।\n\nঅর্ডার বা ডিটেইলসে: www.feriiwala.com",
+        f"ক্যাম্পাসে ডেলিভারি আছে, আর ওয়ারেন্টি থাকছে {warranty}।\n\nঅর্ডার বা ডিটেইলস: www.feriiwala.com",
         name,
     )
     return {
@@ -368,7 +444,7 @@ def refine_caption(product: dict[str, Any], old_caption: str, user_instruction: 
         prompt = (
             "তুমি Campus Feriiwala-র ক্যাম্পাস কপি এডিটর। আগের কপিটা রেখে ব্যবহারকারীর পরিবর্তনের নির্দেশ মেনে নতুন কপি লেখো। "
             "শুধু স্বাভাবিক বাংলা, ক্যাম্পাসের কথ্য টোন, দুই লাইনের হুক, ৩-৪টি কথোপকথনের লাইন, ওয়ারেন্টি এবং ক্যাম্পাস ডেলিভারি রাখবে। "
-            "ভাইয়া বা আপু, সেলসি বুলি, দাম, টাকা, খরচ, পুশি CTA এবং ক্রয়-ধরনের ভাষা লিখবে না। শেষে এই লাইনটি রাখবে: অর্ডার বা ডিটেইলসে: www.feriiwala.com\n"
+            "ভাইয়া বা আপু, সেলসি বুলি, দাম, টাকা, খরচ, পুশি CTA এবং ক্রয়-ধরনের ভাষা লিখবে না। শেষে এই লাইনটি রাখবে: অর্ডার বা ডিটেইলস: www.feriiwala.com\n"
             f"প্রোডাক্ট: {_as_json(_public_product(product))}\nআগের কপি:\n{old_caption}\nব্যবহারকারীর নির্দেশ: {user_instruction}\n"
             "JSON দাও: {\"caption\":\"...\",\"first_comment\":\"...\"}"
         )
@@ -396,9 +472,9 @@ def _normalize_website_footer(caption: str) -> str:
     text = re.sub(r"\[\s*www\.feriiwala\.com\s*\]\([^)]*\)", "", text, flags=re.IGNORECASE)
     text = re.sub(r"https?://(?:www\.)?feriiwala\.com/?", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\bwww\.feriiwala\.com\b", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"অর্ডার\s+বা\s+ডিটেইলসে\s*:\s*", "", text)
+    text = re.sub(r"অর্ডার\s+বা\s+ডিটেইলস(?:ে)?\s*:\s*", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    return f"{text}\n\nঅর্ডার বা ডিটেইলসে: www.feriiwala.com"
+    return f"{text}\n\nঅর্ডার বা ডিটেইলস: www.feriiwala.com"
 
 
 def _finalize_caption(caption: str, product_name: str, product: dict[str, Any]) -> str:
