@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import os
 import threading
+import time
+from urllib.request import urlopen
 import uuid
 from datetime import datetime
 from typing import Any
 
-import pytz
 from flask import Flask
 from telegram import LinkPreviewOptions, Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
+from zoneinfo import ZoneInfo
 
-from config import TELEGRAM_ADMIN_CHAT_ID, TELEGRAM_BOT_TOKEN, TIMEZONE
+from config import TELEGRAM_ADMIN_CHAT_ID, TELEGRAM_BOT_TOKEN
 from core.database import (
     get_group_by_code,
     get_product_by_name_or_alias,
@@ -29,6 +31,8 @@ from core.scheduler import scheduler
 
 _application: Application | None = None
 _refinement_parents: set[str] = set()
+active_post_context: dict[int, dict[str, Any]] = {}
+BD_TZ = ZoneInfo("Asia/Dhaka")
 NO_LINK_PREVIEW = LinkPreviewOptions(is_disabled=True)
 app = Flask(__name__)
 
@@ -43,13 +47,24 @@ def _start_health_server() -> None:
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 
+def _keep_health_server_awake() -> None:
+    port = int(os.environ.get("PORT", "10000"))
+    while True:
+        time.sleep(300)
+        try:
+            with urlopen(f"http://127.0.0.1:{port}/", timeout=5):
+                pass
+        except Exception:
+            pass
+
+
 def _authorized(update: Update) -> bool:
     user = update.effective_user
     return user is not None and user.id == TELEGRAM_ADMIN_CHAT_ID
 
 
 def _local_now() -> datetime:
-    return datetime.now(pytz.timezone(TIMEZONE))
+    return datetime.now(BD_TZ)
 
 
 def _group_name(code: str | None) -> str:
@@ -108,7 +123,18 @@ async def _send_post_dispatch(post_data: dict[str, Any]) -> None:
 
     if stage == "stage_2":
         scheduler.update_post_copy(str(post_data.get("parent_post_id", "")), generated.get("caption", ""), generated.get("first_comment", ""))
-        _refinement_parents.add(str(post_data.get("parent_post_id", "")))
+        parent_id = str(post_data.get("parent_post_id", ""))
+        _refinement_parents.add(parent_id)
+        active_post_context[int(TELEGRAM_ADMIN_CHAT_ID)] = {
+            "parent_post_id": parent_id,
+            "product_id": product.get("id"),
+            "product_name": product.get("name", name),
+            "group": group or {},
+            "old_caption": generated.get("caption", ""),
+            "first_comment": generated.get("first_comment", ""),
+            "review_delivered": True,
+            "target_time": post_data.get("scheduled_time", ""),
+        }
         await _application.bot.send_message(
             chat_id=TELEGRAM_ADMIN_CHAT_ID,
             link_preview_options=NO_LINK_PREVIEW,
@@ -125,6 +151,9 @@ async def _send_post_dispatch(post_data: dict[str, Any]) -> None:
         link_preview_options=NO_LINK_PREVIEW,
         text=f"🚀 সময় হয়ে গেছে! ফাইনাল ক্যাপশনটা কপি করে গ্রুপে পোস্ট করে দাও।\n\n{package}",
     )
+    parent_id = str(post_data.get("parent_post_id", ""))
+    active_post_context.pop(int(TELEGRAM_ADMIN_CHAT_ID), None)
+    _refinement_parents.discard(parent_id)
 
 
 async def _morning_callback(_: dict[str, Any]) -> None:
@@ -140,7 +169,11 @@ async def _reply(update: Update, text: str) -> None:
     await update.message.reply_text(text, link_preview_options=NO_LINK_PREVIEW)
 
 
-async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+def _chat_id(update: Update) -> int | None:
+    return update.effective_chat.id if update.effective_chat else None
+
+
+async def _handle_text_legacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authorized(update) or update.message is None or not update.message.text:
         return
     text = update.message.text.strip()
@@ -171,6 +204,10 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
             return
 
+    chat_id = _chat_id(update)
+    if chat_id is not None:
+        active_post_context.pop(chat_id, None)
+    _refinement_parents.clear()
     try:
         parsed = await parse_daily_plan(text, load_products(), load_groups())
     except Exception:
@@ -212,7 +249,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     feedback_terms = ("rewrite", "ছোট করো", "আরেকটু ছোট করো", "আরেকটু বড় করো", "ডিটেইল করো", "বাসের জ্যামের কথা বাদ দাও", "হুক বদলাও", "বদল", "হুক")
-    pending = _active_refinement_entry()
+    pending = _active_refinement_entry(_chat_id(update))
     is_refinement = bool(pending and any(term.casefold() in text.casefold() for term in feedback_terms))
     if is_refinement:
         pending_data = pending.get("post_data", {})
@@ -222,8 +259,20 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             old_caption = str(pending_data.get("last_caption", "")).strip()
             if not old_caption:
                 old_caption = generate_post_content(product, group, past_history=get_recent_history(7), custom_instruction=pending_data.get("instructions") or None).get("caption", "")
-            generated = refine_caption(product, old_caption, text)
-            scheduler.update_post_copy(str(pending_data.get("parent_post_id", pending.get("post_id", ""))), generated.get("caption", ""), generated.get("first_comment", ""))
+            generated = refine_caption(
+                {"product": product, "old_caption": old_caption, "group": group, "parent_post_id": pending_data.get("parent_post_id")},
+                text,
+            )
+            parent_id = str(pending_data.get("parent_post_id", pending.get("post_id", "")))
+            scheduler.update_post_copy(parent_id, generated.get("caption", ""), generated.get("first_comment", ""))
+            if _chat_id(update) is not None:
+                active_post_context[_chat_id(update)] = {
+                    **active_post_context.get(_chat_id(update), {}),
+                    "parent_post_id": parent_id,
+                    "old_caption": generated.get("caption", ""),
+                    "first_comment": generated.get("first_comment", ""),
+                    "review_delivered": True,
+                }
             await _reply(update,
                 f"আপডেটেড কপি:\n\nক্যাপশন:\n{generated.get('caption', '')}\n\nফার্স্ট কমেন্ট:\n{generated.get('first_comment', '')}"
             )
@@ -232,6 +281,10 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await _reply(update, "এই পোস্টের প্রোডাক্টটা খুঁজে পাইনি, তাই কপিটা বদলাতে পারিনি।")
             return
 
+    chat_id = _chat_id(update)
+    if chat_id is not None:
+        active_post_context.pop(chat_id, None)
+    _refinement_parents.clear()
     try:
         parsed = await parse_daily_plan(text, load_products(), load_groups())
     except Exception:
@@ -243,7 +296,6 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     today = _local_now().date().isoformat()
     confirmations: list[str] = []
-    _refinement_parents.clear()
     for post in parsed.get("scheduled_posts", []):
         post_data = {
             "post_id": str(uuid.uuid4()),
@@ -260,7 +312,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             continue
         scheduler.add_scheduled_post(post_data, _send_post_dispatch)
         save_content_history({**post_data, "status": "SCHEDULED"})
-        if remaining < 10 * 60 and remaining > 5 * 60:
+        if remaining <= 10 * 60 and remaining > 5 * 60:
             confirmations.append("পোস্ট শিডিউল করা হয়েছে! ৫ মিনিট আগে ক্যাপশন পেয়ে যাবে।")
         elif remaining <= 5 * 60 and remaining > 0:
             product = get_product_by_name_or_alias(post_data["product_name"])
@@ -269,6 +321,17 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 generated = generate_post_content(product, group, past_history=get_recent_history(7), custom_instruction=post_data.get("instructions") or None)
                 scheduler.update_post_copy(post_data["post_id"], generated.get("caption", ""), generated.get("first_comment", ""))
                 _refinement_parents.add(post_data["post_id"])
+                if chat_id is not None:
+                    active_post_context[chat_id] = {
+                        "parent_post_id": post_data["post_id"],
+                        "product_id": product.get("id"),
+                        "product_name": product.get("name", post_data["product_name"]),
+                        "group": group,
+                        "old_caption": generated.get("caption", ""),
+                        "first_comment": generated.get("first_comment", ""),
+                        "review_delivered": True,
+                        "target_time": post_data.get("scheduled_time", ""),
+                    }
                 confirmations.append(
                     "পোস্ট শিডিউল করা হয়েছে! এখনই ক্যাপশন প্যাকেজ দেখে নাও:\n\n"
                     f"ক্যাপশন:\n{generated.get('caption', '')}\n\nফার্স্ট কমেন্ট:\n{generated.get('first_comment', '')}"
@@ -280,14 +343,18 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _reply(update, "📋 শিডিউল কনফার্মড:\n" + "\n".join(confirmations) if confirmations else "কোনো valid post পাওয়া যায়নি।")
 
 
-def _active_refinement_entry() -> dict[str, Any] | None:
+def _active_refinement_entry(chat_id: int | None) -> dict[str, Any] | None:
     """Return only a reviewed, not-yet-due Stage 3 post."""
+    context = active_post_context.get(chat_id) if chat_id is not None else None
+    if not context or not context.get("review_delivered"):
+        return None
+    context_parent = str(context.get("parent_post_id", ""))
     for entry in scheduler.active_schedule_registry.values():
         if entry.get("stage") != "stage_3":
             continue
         post_data = entry.get("post_data", {})
         parent_id = str(post_data.get("parent_post_id", entry.get("post_id", "")))
-        if parent_id not in _refinement_parents or not str(post_data.get("last_caption", "")).strip():
+        if parent_id != context_parent or not str(post_data.get("last_caption", "")).strip():
             continue
         try:
             if scheduler.seconds_until_post(post_data) > 0:
@@ -322,6 +389,7 @@ def build_application() -> Application:
 
 def main() -> None:
     threading.Thread(target=_start_health_server, name="health-server", daemon=True).start()
+    threading.Thread(target=_keep_health_server_awake, name="health-keepalive", daemon=True).start()
     application = build_application()
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_text))
     application.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)

@@ -13,6 +13,7 @@ from difflib import SequenceMatcher, get_close_matches
 from typing import Any
 from zoneinfo import ZoneInfo
 
+BD_TZ = ZoneInfo("Asia/Dhaka")
 TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 _DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
 _SPACE_RE = re.compile(r"\s+")
@@ -177,6 +178,8 @@ def _parse_time(value: Any, context: str = "") -> str | None:
         if period == "morning":
             if hour == 12:
                 hour = 0
+        elif period in {"night", "evening", "afternoon"} and hour < 12:
+            hour += 12
         elif period is None and 1 <= hour <= 11:
             hour += 12
         return f"{hour:02d}:{minute:02d}"
@@ -221,7 +224,8 @@ def _weekly_fallback(user_text: str, products: list[Any], groups: list[Any]) -> 
     segments = [segment.strip() for segment in re.split(split_pattern, text, flags=re.I) if segment.strip()]
     if len(segments) == 1 and not any(re.search(rf"(?<!\w){re.escape(day)}(?!\w)", text) for day in _DAYS):
         return []
-    today = datetime.now(ZoneInfo("Asia/Dhaka")).date()
+    now = datetime.now(BD_TZ)
+    today = now.date()
     posts: list[dict[str, Any]] = []
     for segment in segments:
         day_offset = None

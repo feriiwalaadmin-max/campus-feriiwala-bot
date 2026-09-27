@@ -12,24 +12,25 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-import pytz
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from zoneinfo import ZoneInfo
 
 from config import TIMEZONE
 
 
 Callback = Callable[[dict[str, Any]], Any]
 MORNING_JOB_ID = "morning_checkin"
-MISFIRE_GRACE_TIME = 900
+BD_TZ = ZoneInfo("Asia/Dhaka")
+MISFIRE_GRACE_TIME = 60
 
 
 class PostScheduler:
     """Manage in-memory APScheduler jobs with a small JSON persistence layer."""
 
     def __init__(self, timezone_name: str = TIMEZONE, store_path: Path | None = None) -> None:
-        self.timezone = pytz.timezone(timezone_name)
+        self.timezone = BD_TZ
         configured_store = os.getenv("SCHEDULE_STORE_PATH", "").strip()
         self.store_path = store_path or Path(configured_store or (Path(__file__).resolve().parent.parent / "data" / "scheduled_jobs.json"))
         self.scheduler = AsyncIOScheduler(timezone=self.timezone)
@@ -89,7 +90,7 @@ class PostScheduler:
         try:
             parsed_time = datetime.strptime(scheduled_time, "%H:%M").time()
             if isinstance(post_date, datetime):
-                local_date = post_date.date()
+                local_date = post_date.astimezone(BD_TZ).date() if post_date.tzinfo else post_date.date()
             elif isinstance(post_date, date_type):
                 local_date = post_date
             else:
@@ -97,8 +98,7 @@ class PostScheduler:
         except (TypeError, ValueError) as exc:
             raise ValueError("date must be YYYY-MM-DD and scheduled_time must be HH:MM.") from exc
 
-        local_post_time = self.timezone.localize(datetime.combine(local_date, parsed_time))
-        return local_post_time - timedelta(minutes=minutes_before)
+        return datetime.combine(local_date, parsed_time, tzinfo=BD_TZ) - timedelta(minutes=minutes_before)
 
     async def _run_callback(self, job_id: str) -> None:
         entry = self.active_schedule_registry.get(job_id)
@@ -126,7 +126,8 @@ class PostScheduler:
             raise RuntimeError("PostScheduler has not been started. Call start() first.")
 
     def _schedule_job(self, post_id: str, dispatch_time: datetime) -> None:
-        if dispatch_time <= datetime.now(self.timezone):
+        now = datetime.now(BD_TZ)
+        if dispatch_time <= now:
             return
         self.scheduler.add_job(
             self._run_callback,
@@ -135,28 +136,33 @@ class PostScheduler:
             args=[post_id],
             id=post_id,
             replace_existing=True,
-            misfire_grace_time=30,
+            misfire_grace_time=MISFIRE_GRACE_TIME,
             coalesce=True,
             max_instances=1,
         )
 
     def seconds_until_post(self, post_data: dict[str, Any]) -> float:
         """Return seconds until T-0 in the scheduler timezone."""
-        return (self._parse_dispatch_time(post_data, 0) - datetime.now(self.timezone)).total_seconds()
+        return (self._parse_dispatch_time(post_data, 0) - datetime.now(BD_TZ)).total_seconds()
 
     def plan_stages(self, post_data: dict[str, Any]) -> list[tuple[str, datetime]]:
         """Choose only future reminder stages for the post's current lead time."""
         target = self._parse_dispatch_time(post_data, 0)
-        remaining = (target - datetime.now(self.timezone)).total_seconds()
+        now = datetime.now(BD_TZ)
+        remaining = (target - now).total_seconds()
         if remaining <= 0:
             return []
-        if remaining <= 5 * 60:
-            offsets = (("stage_3", 0),)
-        elif remaining < 10 * 60:
+        if remaining > 10 * 60:
+            offsets = (("stage_1", 10), ("stage_2", 5), ("stage_3", 0))
+        elif remaining > 5 * 60:
             offsets = (("stage_2", 5), ("stage_3", 0))
         else:
-            offsets = (("stage_1", 10), ("stage_2", 5), ("stage_3", 0))
-        return [(stage, target - timedelta(minutes=minutes_before)) for stage, minutes_before in offsets if target - timedelta(minutes=minutes_before) > datetime.now(self.timezone)]
+            offsets = (("stage_3", 0),)
+        return [
+            (stage, target - timedelta(minutes=minutes_before))
+            for stage, minutes_before in offsets
+            if target - timedelta(minutes=minutes_before) > now
+        ]
 
     def restore_scheduled_posts(self, callback_func: Callback) -> int:
         """Re-register persisted posts after a process restart.
@@ -174,8 +180,10 @@ class PostScheduler:
             try:
                 dispatch_time = datetime.fromisoformat(str(entry["dispatch_time"]))
                 if dispatch_time.tzinfo is None:
-                    dispatch_time = self.timezone.localize(dispatch_time)
-                if dispatch_time <= datetime.now(self.timezone):
+                    dispatch_time = dispatch_time.replace(tzinfo=BD_TZ)
+                else:
+                    dispatch_time = dispatch_time.astimezone(BD_TZ)
+                if dispatch_time <= datetime.now(BD_TZ):
                     expired.append(post_id)
                     continue
                 job_id = str(entry.get("job_id", post_id))
@@ -274,7 +282,7 @@ class PostScheduler:
             trigger=CronTrigger(hour=hour, minute=minute, timezone=self.timezone),
             id=MORNING_JOB_ID,
             replace_existing=True,
-            misfire_grace_time=30,
+            misfire_grace_time=MISFIRE_GRACE_TIME,
             coalesce=True,
             max_instances=1,
         )

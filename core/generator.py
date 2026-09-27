@@ -232,6 +232,8 @@ def _validate_output(
         return "caption must start with a two-line hook"
     if re.search(r"(?i)(?:৳|\u09f3|\b(?:tk|bdt|price|pricing|cost|দাম|মূল্য)\b)", "\n".join(str(output[key]) for key in ("caption", "first_comment", "suggested_design_prompt"))):
         return "pricing content detected"
+    if re.search(r"(?i)\b(?:driver|bluetooth|battery|anc|impedance|sensitivity)\s*:\s*", caption):
+        return "raw specification dump detected"
     word_count = len(re.findall(r"\S+", caption))
     if word_count < 150 or word_count > 250:
         return "caption অবশ্যই ১৫০–২৫০ শব্দের হতে হবে।"
@@ -290,6 +292,7 @@ def generate_post_content(
         "Start with a relatable campus/student hook, transition naturally to the product, explain only "
         "benefits supported by the supplied product dictionary, mention warranty and campus delivery, "
         "and end with a soft natural CTA. Never invent battery hours, ANC values, colors, features, "
+        "Never dump raw catalog specs as key:value text (for example, driver: 10mm or bluetooth: 5.4); explain features naturally inside the student story. "
         "money, currency, pricing, or warranty details. Do not mention facts absent from the product dictionary. "
         f"Strictly avoid these banned phrases: {_as_json(list(banned))}. "
         "Do not use fake scarcity or urgency, and use at most a few emojis."
@@ -299,7 +302,7 @@ def generate_post_content(
         "Never use sadhu or textbook wording such as ব্যবহার, দৈনন্দিন জীবন, or ক্রয় করুন. Tailor the two-line hook and body to the user's custom topic or style instruction when provided."
     )
     system_prompt += (
-        " CRITICAL GUARDRAIL: Below are previously generated captions/hooks for this product: "
+        " CRITICAL: The following hooks/stories have been used recently: "
         f"{_as_json(recent_generation)} "
         "You are STRICTLY FORBIDDEN from reusing any of these ideas, opening phrases, hooks, or narrative angles. "
         "Every single post must be an entirely unique, fresh campus micro-story never told before."
@@ -363,6 +366,7 @@ def generate_post_content(
 
 
 _COPY_CLICHES = (
+    "ভাইয়া", "ভাইয়া", "আপু", "ডেইলি লাইফে সত্যিই কাজে লাগবে", "দেরি না করে",
     "এই ছোট্ট গ্যাজেটটি ডেইলি লাইফে সত্যিই কাজে লাগবে",
     "ভাইয়া বা আপু",
     "কাজে লাগবে মনে হলে মেসেজ করে জানিয়ে দিন",
@@ -393,8 +397,7 @@ def _ensure_hook(caption: str, product_name: str, campus_context: str | None = N
 def _fallback_content(product: dict[str, Any], selected_angle: str) -> dict[str, str]:
     warranty = str(product.get("warranty", "প্রযোজ্য ওয়ারেন্টি"))
     name = str(product.get("name", "এই প্রোডাক্ট"))
-    specs = product.get("specs", {})
-    detail = ", ".join(f"{key}: {value}" for key, value in specs.items() if value not in (None, False))
+    detail = "ক্যাটালগে থাকা দরকারি ফিচারগুলো"
     caption = _ensure_hook(
         f"ক্লাসের নোট, এসাইনমেন্ট আর বাসের জ্যাম—এই সবের মাঝে {name}-এর ফিচারগুলো বাস্তবেই কাজে আসে। {detail[:260]}। "
         f"ক্যাম্পাসে ডেলিভারি আছে, আর ওয়ারেন্টি থাকছে {warranty}।\n\nঅর্ডার বা ডিটেইলস: www.feriiwala.com",
@@ -418,9 +421,7 @@ def _refinement_fallback(product: dict[str, Any], old_caption: str, user_instruc
         lines = text.splitlines()
         text = "\n".join(lines[:6])
     elif any(term in instruction for term in ("বড়", "ডিটেইল", "detail")):
-        specs = product.get("specs", {})
-        extra = "\n".join(f"{key}: {value}" for key, value in specs.items() if value not in (None, False))
-        text = f"{text}\n{extra[:320]}"
+        text = f"{text}\nএই মডেলের মূল ফিচারগুলো ক্যাম্পাসের কাজের সঙ্গে মিলিয়ে সহজভাবে বলা হলো।"
     final_caption = _finalize_caption(text, str(product.get("name", "এই প্রোডাক্ট")), product)
     if "বাসের জ্যাম" in user_instruction and ("বাদ" in user_instruction or "remove" in instruction):
         final_caption = final_caption.replace("বাসের জ্যাম", "ক্যাম্পাসের যাতায়াত")
@@ -430,8 +431,17 @@ def _refinement_fallback(product: dict[str, Any], old_caption: str, user_instruc
     }
 
 
-def refine_caption(product: dict[str, Any], old_caption: str, user_instruction: str) -> dict[str, str]:
+def refine_caption(product: dict[str, Any], old_caption: str | dict[str, Any], user_instruction: str | None = None) -> dict[str, str]:
     """Revise the active copy without routing feedback through the scheduler parser."""
+    if user_instruction is None and isinstance(old_caption, str) and isinstance(product, dict) and isinstance(product.get("product"), dict):
+        context = product
+        user_instruction = old_caption
+        product = context["product"]
+        old_caption = str(context.get("old_caption", ""))
+    if user_instruction is None:
+        user_instruction = ""
+    if not isinstance(old_caption, str):
+        old_caption = str(old_caption or "")
     if not isinstance(product, dict):
         return {"caption": _copy_safe(old_caption), "first_comment": "কপিটা দেখে মতামত জানাও।"}
     try:
