@@ -67,6 +67,50 @@ def _local_now() -> datetime:
     return datetime.now(BD_TZ)
 
 
+MAX_TELEGRAM_TEXT = 4000
+
+
+def _message_chunks(text: str) -> list[str]:
+    text = str(text or "")
+    chunks: list[str] = []
+    while len(text) > MAX_TELEGRAM_TEXT:
+        split_at = text.rfind("\n", 0, MAX_TELEGRAM_TEXT)
+        if split_at < 1:
+            split_at = MAX_TELEGRAM_TEXT
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip("\n")
+    if text:
+        chunks.append(text)
+    return chunks or [""]
+
+
+async def _send_message(*, chat_id: int, text: str, **_: Any) -> None:
+    """Send safe-sized chunks while preserving the no-preview rule."""
+    if _application is None:
+        return
+    for chunk in _message_chunks(text):
+        await _application.bot.send_message(
+            chat_id=chat_id,
+            text=chunk,
+            link_preview_options=NO_LINK_PREVIEW,
+        )
+
+
+def _multi_day_summary(parsed: dict[str, Any]) -> str:
+    posts = [post for post in parsed.get("scheduled_posts", []) if isinstance(post, dict)]
+    ordered = sorted(posts, key=lambda post: (int(post.get("day_number", 0)), str(post.get("time", ""))))
+    days = int(parsed.get("schedule_days", 0))
+    total = int(parsed.get("total_events", len(posts)))
+    first_time = ordered[0].get("time", "") if ordered else ""
+    last_time = ordered[-1].get("time", "") if ordered else ""
+    return (
+        f"✅ {days} দিনের শিডিউল সফলভাবে গ্রহণ করা হয়েছে!\n"
+        f"মোট পোস্ট: {total}টি\n"
+        f"শুরু: আগামীকাল {first_time}\n"
+        f"শেষ: {days} দিন পর {last_time}"
+    )
+
+
 def _group_name(code: str | None) -> str:
     group = get_group_by_code(code or "")
     return str(group.get("name", code)) if group else str(code or "নির্দিষ্ট গ্রুপ নেই")
@@ -97,7 +141,7 @@ async def _send_post_dispatch(post_data: dict[str, Any]) -> None:
     target_time = str(post_data.get("scheduled_time", ""))
 
     if stage == "stage_1":
-        await _application.bot.send_message(
+        await _send_message(
             chat_id=TELEGRAM_ADMIN_CHAT_ID,
             link_preview_options=NO_LINK_PREVIEW,
             text=f"🔔 তোমার {target_time}-এ {name} নিয়ে পোস্ট আছে{group_suffix}। পোস্টের প্রস্তুতি নাও!",
@@ -135,7 +179,7 @@ async def _send_post_dispatch(post_data: dict[str, Any]) -> None:
             "review_delivered": True,
             "target_time": post_data.get("scheduled_time", ""),
         }
-        await _application.bot.send_message(
+        await _send_message(
             chat_id=TELEGRAM_ADMIN_CHAT_ID,
             link_preview_options=NO_LINK_PREVIEW,
             text=(
@@ -146,7 +190,7 @@ async def _send_post_dispatch(post_data: dict[str, Any]) -> None:
         )
         return
 
-    await _application.bot.send_message(
+    await _send_message(
         chat_id=TELEGRAM_ADMIN_CHAT_ID,
         link_preview_options=NO_LINK_PREVIEW,
         text=f"🚀 সময় হয়ে গেছে! ফাইনাল ক্যাপশনটা কপি করে গ্রুপে পোস্ট করে দাও।\n\n{package}",
@@ -158,7 +202,7 @@ async def _send_post_dispatch(post_data: dict[str, Any]) -> None:
 
 async def _morning_callback(_: dict[str, Any]) -> None:
     if _application is not None:
-        await _application.bot.send_message(
+        await _send_message(
             chat_id=TELEGRAM_ADMIN_CHAT_ID,
             link_preview_options=NO_LINK_PREVIEW,
             text="☀️ আজ কোন প্রোডাক্ট আর কোন সময়ে পোস্ট দিতে চাও?",
@@ -166,10 +210,11 @@ async def _morning_callback(_: dict[str, Any]) -> None:
 
 
 async def _reply(update: Update, text: str) -> None:
-    await update.message.reply_text(text, link_preview_options=NO_LINK_PREVIEW)
+    for chunk in _message_chunks(text):
+        await update.message.reply_text(chunk, link_preview_options=NO_LINK_PREVIEW)
 
 
-RESET_CONFIRMATION = "সব পূর্ববর্তী শিডিউল বাতিল করা হয়েছে এবং মেমোরি সম্পূর্ণ ক্লিয়ার করা হয়েছে।"
+RESET_CONFIRMATION = "সব পূর্ববর্তী শিডিউল বাতিল করা হয়েছে এবং মেমোরি সম্পূর্ণ ক্লিয়ার করা হয়েছে।"
 RESET_TEXTS = {"স্টপ", "সব ক্লিয়ার করো", "ক্লিয়ার", "সব ক্লিয়ার"}
 
 
@@ -254,11 +299,7 @@ async def _handle_text_legacy(update: Update, context: ContextTypes.DEFAULT_TYPE
         save_content_history({**post_data, "status": "SCHEDULED"})
         confirmations.append(f"• {post_data['date']} {post_data['scheduled_time']} — {post_data['product_name']} — {_group_name(post_data['group_code'])}")
     if parsed.get("schedule_days"):
-        first_day_posts = [post for post in parsed.get("scheduled_posts", []) if int(post.get("day_number", 0)) == 1]
-        first_day_posts.sort(key=lambda post: post.get("time", ""))
-        first_time = first_day_posts[0].get("time", "") if first_day_posts else ""
-        summary = f"মোট {parsed.get('schedule_days')} দিনের {parsed.get('total_events', len(confirmations))}টি পোস্ট সফলভাবে শিডিউল করা হয়েছে। দিন ১ শুরু হবে আগামীকাল {first_time} টায়।"
-        await _reply(update, summary + ("\n\n" + "\n".join(confirmations) if confirmations else ""))
+        await _reply(update, _multi_day_summary(parsed))
     else:
         await _reply(update, "📋 শিডিউল কনফার্মড:\n" + "\n".join(confirmations) if confirmations else "কোনো valid post পাওয়া যায়নি।")
 
@@ -371,11 +412,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         else:
             confirmations.append(f"• {post_data['date']} {post_data['scheduled_time']} — {post_data['product_name']} — {_group_name(post_data['group_code'])}")
     if parsed.get("schedule_days"):
-        first_day_posts = [post for post in parsed.get("scheduled_posts", []) if int(post.get("day_number", 0)) == 1]
-        first_day_posts.sort(key=lambda post: post.get("time", ""))
-        first_time = first_day_posts[0].get("time", "") if first_day_posts else ""
-        summary = f"মোট {parsed.get('schedule_days')} দিনের {parsed.get('total_events', len(confirmations))}টি পোস্ট সফলভাবে শিডিউল করা হয়েছে। দিন ১ শুরু হবে আগামীকাল {first_time} টায়।"
-        await _reply(update, summary + ("\n\n" + "\n".join(confirmations) if confirmations else ""))
+        await _reply(update, _multi_day_summary(parsed))
     else:
         await _reply(update, "📋 শিডিউল কনফার্মড:\n" + "\n".join(confirmations) if confirmations else "কোনো valid post পাওয়া যায়নি।")
 
